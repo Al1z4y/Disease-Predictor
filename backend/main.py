@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import pickle
 import uvicorn
+import os
+import joblib
 
 # Create FastAPI app
 app = FastAPI(
@@ -15,35 +17,79 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React development server
+    allow_origins=[
+        "http://localhost:3000",                 # local dev
+        "https://disease-predictor-omega.vercel.app"  # your deployed frontend
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Base directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Debug: Print file structure
+print("=== DEBUG FILE STRUCTURE ===")
+print(f"Current directory: {BASE_DIR}")
+print(f"Files in current directory: {os.listdir(BASE_DIR)}")
+
+if os.path.exists("models"):
+    print("models directory exists")
+    print(f"Files in models: {os.listdir('models')}")
+else:
+    print("models directory does NOT exist")
+
+if os.path.exists("datasets"):
+    print("datasets directory exists")
+    print(f"Files in datasets: {os.listdir('datasets')}")
+else:
+    print("datasets directory does NOT exist")
+
+# Load model with multiple fallback options
+MODEL_PATH = os.path.join(BASE_DIR, "models", "svc.pkl")
+svc = None
+
+try:
+    # Try joblib first
+    svc = joblib.load(MODEL_PATH)
+    print(f"✅ Model loaded successfully with joblib from {MODEL_PATH}")
+except FileNotFoundError:
+    print(f"❌ Model file not found at {MODEL_PATH}")
+except Exception as e:
+    print(f"❌ Error loading with joblib: {e}")
+    try:
+        # Fallback to pickle
+        with open(MODEL_PATH, 'rb') as f:
+            svc = pickle.load(f)
+        print(f"✅ Model loaded successfully with pickle from {MODEL_PATH}")
+    except Exception as e2:
+        print(f"❌ Error loading with pickle: {e2}")
 
 # Load datasets
-try:
-    sym_des = pd.read_csv("datasets/symtoms_df.csv")
-    precautions = pd.read_csv("datasets/precautions_df.csv")
-    workout = pd.read_csv("datasets/workout_df.csv")
-    description = pd.read_csv("datasets/description.csv")
-    medications = pd.read_csv('datasets/medications.csv')
-    diets = pd.read_csv("datasets/diets.csv")
-except FileNotFoundError as e:
-    print(f"Error loading datasets: {e}")
-    print("Please ensure all dataset files are in the 'datasets/' directory")
+DATASET_DIR = os.path.join(BASE_DIR, "datasets")
+sym_des = None
+precautions = None
+workout = None
+description = None
+medications = None
+diets = None
 
-# Load model
 try:
-    svc = pickle.load(open('svc.pkl', 'rb'))
-except FileNotFoundError:
-    print("Error: Model file 'models/svc.pkl' not found")
-    svc = None
+    sym_des = pd.read_csv(os.path.join(DATASET_DIR, "symtoms_df.csv"))
+    precautions = pd.read_csv(os.path.join(DATASET_DIR, "precautions_df.csv"))
+    workout = pd.read_csv(os.path.join(DATASET_DIR, "workout_df.csv"))
+    description = pd.read_csv(os.path.join(DATASET_DIR, "description.csv"))
+    medications = pd.read_csv(os.path.join(DATASET_DIR, "medications.csv"))
+    diets = pd.read_csv(os.path.join(DATASET_DIR, "diets.csv"))
+    print("✅ All datasets loaded successfully")
+except FileNotFoundError as e:
+    print(f"❌ Error loading datasets: {e}")
+    # Print available files for debugging
+    if os.path.exists(DATASET_DIR):
+        print(f"Available files in datasets: {os.listdir(DATASET_DIR)}")
 
 # Pydantic models for request/response
 class SymptomsRequest(BaseModel):
@@ -57,9 +103,7 @@ class DiseaseResponse(BaseModel):
     diet: List[str]
     workout: List[str]
 
-
-
-# Symptoms dictionary and diseases list (same as original)
+# Symptoms dictionary and diseases list
 symptoms_dict = {
     'itching': 0, 'skin_rash': 1, 'nodal_skin_eruptions': 2, 'continuous_sneezing': 3,
     'shivering': 4, 'chills': 5, 'joint_pain': 6, 'stomach_pain': 7, 'acidity': 8,
@@ -119,20 +163,23 @@ diseases_list = {
 def helper(dis: str):
     """Get disease information including description, precautions, medications, diet, and workout"""
     try:
+        if description is None:
+            return "Description dataset not loaded", [], [], [], []
+            
         desc = description[description['Disease'] == dis]['Description']
-        desc = " ".join([w for w in desc])
+        desc = " ".join([w for w in desc]) if len(desc) > 0 else "No description available"
 
         pre = precautions[precautions['Disease'] == dis][['Precaution_1', 'Precaution_2', 'Precaution_3', 'Precaution_4']]
         pre = [col for col in pre.values[0] if pd.notna(col)] if len(pre) > 0 else []
 
         med = medications[medications['Disease'] == dis]['Medication']
-        med = [med for med in med.values if pd.notna(med)]
+        med = [med for med in med.values if pd.notna(med)] if len(med) > 0 else []
 
         die = diets[diets['Disease'] == dis]['Diet']
-        die = [die for die in die.values if pd.notna(die)]
+        die = [die for die in die.values if pd.notna(die)] if len(die) > 0 else []
 
         wrkout = workout[workout['disease'] == dis]['workout']
-        wrkout = [w for w in wrkout.values if pd.notna(w)]
+        wrkout = [w for w in wrkout.values if pd.notna(w)] if len(wrkout) > 0 else []
 
         return desc, pre, med, die, wrkout
     except Exception as e:
@@ -153,7 +200,6 @@ def get_predicted_value(patient_symptoms: List[str]) -> str:
     return diseases_list.get(prediction, "Unknown disease")
 
 # API Routes
-
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Root endpoint"""
@@ -173,7 +219,11 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "model_loaded": svc is not None}
+    return {
+        "status": "healthy", 
+        "model_loaded": svc is not None,
+        "datasets_loaded": all([sym_des is not None, precautions is not None, description is not None])
+    }
 
 @app.get("/symptoms")
 async def get_available_symptoms():
@@ -201,39 +251,37 @@ async def predict_disease(symptoms_request: SymptomsRequest):
             )
         
         predicted_disease = get_predicted_value(symptoms_request.symptoms)
-        desc, precautions, medications, diet, workout = helper(predicted_disease)
+        desc, precautions_list, medications_list, diet_list, workout_list = helper(predicted_disease)
         
         return DiseaseResponse(
             predicted_disease=predicted_disease,
             description=desc,
-            precautions=precautions,
-            medications=medications,
-            diet=diet,
-            workout=workout
+            precautions=precautions_list,
+            medications=medications_list,
+            diet=diet_list,
+            workout=workout_list
         )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
 
-
-
 @app.get("/disease-info/{disease_name}")
 async def get_disease_info(disease_name: str):
     """Get detailed information about a specific disease"""
     try:
-        desc, precautions, medications, diet, workout = helper(disease_name)
+        desc, precautions_list, medications_list, diet_list, workout_list = helper(disease_name)
         
-        if not desc:
+        if not desc or desc == "No description available":
             raise HTTPException(status_code=404, detail=f"Disease '{disease_name}' not found")
         
         return {
             "disease": disease_name,
             "description": desc,
-            "precautions": precautions,
-            "medications": medications,
-            "diet": diet,
-            "workout": workout
+            "precautions": precautions_list,
+            "medications": medications_list,
+            "diet": diet_list,
+            "workout": workout_list
         }
     except HTTPException:
         raise
@@ -241,5 +289,4 @@ async def get_disease_info(disease_name: str):
         raise HTTPException(status_code=500, detail=f"Error retrieving disease info: {str(e)}")
 
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
