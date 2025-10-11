@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || "http://127.0.0.1:8000";
+const API_BASE_URL = "https://backend-it21.onrender.com";
+
 
 
 
@@ -435,7 +436,7 @@ function App() {
             <span>MedCare AI</span>
           </div>
           <div className="footer-text">
-            <p>Powered by Advanced Medical AI • Trusted by Healthcare Professionals</p>
+            <p>Powered by Advanced Medical AI • Trusted by Healthcare Professionals • By Alizay & Hamza </p>
           </div>
         </div>
       </div>
